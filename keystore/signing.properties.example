@@ -1,0 +1,7 @@
+# Copy this file to signing.properties (gitignored) and fill in your own values.
+# Generate a keystore, for example:
+# keytool -genkeypair -v -keystore keystore/release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias sleepcollect
+storeFile=keystore/release.jks
+storePassword=CHANGE_ME
+keyAlias=sleepcollect
+keyPassword=CHANGE_ME

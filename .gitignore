@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio
+.idea/
+*.iml
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Release signing secrets — never commit these
+keystore/release.jks
+keystore/*.jks
+keystore/*.keystore
+keystore/signing.properties
+*.jks
+*.keystore
