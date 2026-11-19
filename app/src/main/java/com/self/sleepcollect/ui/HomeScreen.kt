@@ -286,7 +286,7 @@ private fun DisclaimerCard() {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("免责声明", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
-                "本应用根据前台应用的打开/退出记录推测睡眠，不是医疗级睡眠监测，结果仅供个人参考，不能用于健康诊断。",
+                "本应用根据前台使用和解锁记录推测睡眠，不是医疗级睡眠监测，结果仅供个人参考，不能用于健康诊断。",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -298,8 +298,9 @@ private fun LimitationsCard() {
     Card {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("已知限制", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text("• 只能看到前台 App 事件。仅通知引起的短暂亮屏（没有前台应用）无法识别，可能让睡眠看起来更长。", style = MaterialTheme.typography.bodyMedium)
-            Text("• 半夜打开手机刷一会儿，会被判定为醒来，睡眠窗口会被拆开。", style = MaterialTheme.typography.bodyMedium)
+            Text("• 只能看到 UsageStats 里的前台会话和锁屏解锁。仅通知引起的短暂亮屏（没有前台应用、也没有解锁）无法识别，可能让睡眠看起来更长。", style = MaterialTheme.typography.bodyMedium)
+            Text("• 醒来按第一次真正解锁估算。锁屏上关闹钟或看时间不会结束睡眠。解锁后 3 分钟内若又长时间不用手机，算短暂中断，睡眠继续；超过 3 分钟仍视为醒来。", style = MaterialTheme.typography.bodyMedium)
+            Text("• 无法区分有意解锁和误触指纹、人脸或 Smart Lock。部分小米系统不记录解锁事件，这时改用超过 3 分钟的前台使用作为醒来。", style = MaterialTheme.typography.bodyMedium)
             Text("• 恢复出厂设置或关闭「使用情况访问权限」后，系统底层历史数据会被清空。", style = MaterialTheme.typography.bodyMedium)
             Text("• 只做推测睡眠，不是医疗级监测。", style = MaterialTheme.typography.bodyMedium)
         }

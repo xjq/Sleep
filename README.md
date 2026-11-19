@@ -13,8 +13,8 @@
 ## 它做什么
 
 1. 检测「使用情况访问权限」。未开启时引导跳转到系统 `USAGE_ACCESS_SETTINGS`。
-2. 用户选择起止时间（默认最近 7 天），调用 `UsageStatsManager.queryEvents` 拉取 `ACTIVITY_RESUMED` / `ACTIVITY_PAUSED`。
-3. 用独立纯函数组装前台会话、计算静默间隙，过滤夜间窗口（22:00～次日 10:00）且 ≥ 90 分钟的间隙，取当日最长间隙作为推测睡眠。
+2. 用户选择起止时间（默认最近 7 天），调用 `UsageStatsManager.queryEvents` 拉取 `ACTIVITY_RESUMED` / `ACTIVITY_PAUSED`，以及 API 28+ 的 `KEYGUARD_SHOWN` / `KEYGUARD_HIDDEN`（锁屏出现 / 解锁）。
+3. 用独立纯函数组装前台会话、计算静默间隙。入睡仍是夜间窗口内足够长的未使用间隙的起点；醒来是入睡之后第一次真正解锁。锁屏上关闹钟、看时间不算醒来。解锁后若不超过 3 分钟又进入长静默，视为短暂中断并合并。同一晚若被超过 3 分钟的真实使用拆开，仍取最长的一段。
 4. 在首页展示每日结果和原始会话预览。
 5. 把约定 JSON POST 到用户填写的完整接口地址；本地 Room（SQLite）缓存事件、计算结果和上报状态，失败可重试。
 
@@ -105,10 +105,12 @@ JSON 字段名（必须一致）：
 - 计算：`algorithm/src/main/kotlin/com/self/sleepcollect/algorithm/SleepCalculator.kt`
 
 ```kotlin
-const val MIN_SLEEP_GAP_MS = 90 * 60 * 1000L // 最小静默 90 分钟
-const val NIGHT_START_HOUR = 22              // 夜间窗口起始 22 点
-const val NIGHT_END_HOUR = 10                // 夜间窗口结束次日 10 点
+const val MIN_SLEEP_GAP_MS = 90 * 60 * 1000L          // 最小静默 90 分钟
+const val MAX_BRIEF_INTERRUPTION_MS = 3 * 60 * 1000L  // 短暂中断上限 3 分钟
+const val NIGHT_START_HOUR = 22                       // 夜间窗口起始 22 点
+const val NIGHT_END_HOUR = 10                         // 夜间窗口结束次日 10 点
 // 时区固定 Asia/Shanghai
+// KEYGUARD_SHOWN = 17，KEYGUARD_HIDDEN = 18
 ```
 
 更细的规则说明见 [`docs/ALGORITHM.md`](docs/ALGORITHM.md)。
@@ -125,7 +127,7 @@ const val NIGHT_END_HOUR = 10                // 夜间窗口结束次日 10 点
 adb logcat -s SleepCollect
 ```
 
-会输出：采集前权限校验结果、`queryEvents` 事件总条数、相关原始事件、每条静默间隙的过滤/归属决策、上报 HTTP 状态码和响应摘要。
+会输出：采集前权限校验结果、`queryEvents` 事件总条数、`RESUMED/PAUSED` 与 `KEYGUARD_SHOWN` / `KEYGUARD_HIDDEN` 条数、相关原始事件、每条静默间隙的过滤/归属决策、上报 HTTP 状态码和响应摘要。`KEYGUARD_HIDDEN` 长期为 0 时，说明这台手机没有把解锁写入 UsageStats，算法会退回按前台使用估算醒来。
 
 ---
 
@@ -141,10 +143,13 @@ adb logcat -s SleepCollect
 
 ## 已知限制
 
-1. 数据源只有前台 App 的 RESUMED/PAUSED 事件，**无法识别仅通知引起的短暂亮屏**（没有前台应用）。这类情况会让静默间隙看起来更长，从而干扰推测。
-2. **半夜打开手机刷一会儿**会被当成醒来，睡眠窗口会被拆成两段；算法在同一夜间窗口取最长的一段。
-3. **恢复出厂设置**或**关闭使用情况访问权限**后，系统底层历史数据会被清空，本 App 也无法再读到。
-4. 本工具只做**推测睡眠**，**不是医疗级睡眠监测**。界面已标注，结果仅供个人参考。
+1. 数据源是 UsageStats 的前台会话和锁屏解锁事件，**无法识别仅通知引起的短暂亮屏**（没有前台应用，也没有解锁）。这类情况会让静默间隙看起来更长。
+2. **醒来按第一次真正解锁估算**（`KEYGUARD_HIDDEN`）。在锁屏上关掉闹钟或看一眼时间，通常不会解锁，因此不会结束睡眠。
+3. **解锁后 3 分钟内**若再次进入长时间未使用（例如关掉闹钟后又睡着），这段不算醒来，前后静默会合并；睡眠仍从原来的入睡时间算起，醒来记到下一次真正解锁。解锁后连续使用超过 3 分钟，则这次解锁就是醒来。半夜解锁并使用超过 3 分钟仍会把当晚拆成两段，取较长的一段。
+4. UsageStats **无法区分有意解锁和误触**（指纹、人脸、Smart Lock 都只是一次 `KEYGUARD_HIDDEN`）。误触若超过 3 分钟，或之后没有再睡回去，会被当成醒来。
+5. **部分 MIUI / 澎湃 OS 不记录 KEYGUARD 事件**。若整段数据里完全没有 `KEYGUARD_HIDDEN`，退回按前台会话估算醒来，但夜间窗口内不超过 3 分钟、且前后仍是长静默的会话视为短暂中断。若其它时刻有解锁事件，而某次超过 3 分钟的前台使用期间没有 `KEYGUARD_HIDDEN`，则用该次会话的开始时间作为醒来。
+6. **恢复出厂设置**或**关闭使用情况访问权限**后，系统底层历史数据会被清空，本 App 也无法再读到。
+7. 本工具只做**推测睡眠**，**不是医疗级睡眠监测**。界面已标注，结果仅供个人参考。
 
 ---
 

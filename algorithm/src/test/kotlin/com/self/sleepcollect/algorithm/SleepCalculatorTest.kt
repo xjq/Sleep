@@ -290,4 +290,344 @@ class SleepCalculatorTest {
         assertTrue(result.gaps.isEmpty())
         assertTrue(result.sleeps.isEmpty())
     }
+
+    @Test
+    fun briefAndKeyguardConstants_matchAgreedThresholds() {
+        assertEquals(3 * 60 * 1000L, SleepConstants.MAX_BRIEF_INTERRUPTION_MS)
+        assertEquals(17, SleepConstants.EVENT_KEYGUARD_SHOWN)
+        assertEquals(18, SleepConstants.EVENT_KEYGUARD_HIDDEN)
+    }
+
+    /**
+     * 7:30 锁屏关闹钟（短 RESUMED，没有 KEYGUARD_HIDDEN），随后继续睡到真正解锁。
+     * 闹钟会话仍出现在原始会话里，但醒来必须是稍后的解锁，而不是闹钟 RESUMED。
+     */
+    @Test
+    fun lockScreenAlarmDismiss_thenMoreSleep_wakeIsLaterUnlock() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            resumed("2026-11-11T07:30:00", "com.android.deskclock"),
+            paused("2026-11-11T07:30:15", "com.android.deskclock"),
+            hidden("2026-11-11T09:00:00"),
+            resumed("2026-11-11T09:00:02", "com.android.settings"),
+            paused("2026-11-11T09:20:00", "com.android.settings"),
+            shown("2026-11-11T09:20:00"),
+        )
+        val result = computeNight(events)
+
+        assertEquals(1, result.sleeps.size)
+        val sleep = result.sleeps.single()
+        assertEquals("2026-11-10", sleep.dayDate)
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T09:00:00"), sleep.sleepEndTs)
+        assertEquals(600L, sleep.sleepDurationMin)
+        assertEquals("com.tiktok", sleep.lastAppPackage)
+        assertTrue(result.sessions.any { it.pkg == "com.android.deskclock" })
+        assertTrue(sleep.rawSessions.any { it.pkg == "com.android.deskclock" })
+        assertTrue(result.sleeps.none { it.sleepEndTs == ts("2026-11-11T07:30:00") })
+    }
+
+    /**
+     * 闹钟界面还在前台时就解锁：同一段使用里，醒来是 KEYGUARD_HIDDEN，不是更早的锁屏 RESUMED。
+     */
+    @Test
+    fun unlockWhileAlarmStillResumed_wakeIsUnlockNotAlarmStart() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            resumed("2026-11-11T07:30:00", "com.android.deskclock"),
+            paused("2026-11-11T07:30:10", "com.android.deskclock"),
+            hidden("2026-11-11T07:30:20"),
+            resumed("2026-11-11T07:30:21", "com.android.settings"),
+            paused("2026-11-11T07:50:00", "com.android.settings"),
+            shown("2026-11-11T07:50:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:30:20"), sleep.sleepEndTs)
+        assertEquals("com.tiktok", sleep.lastAppPackage)
+    }
+
+    /** 整段输入没有 KEYGUARD_HIDDEN：锁屏短会话视为中断，醒来是稍后那段长时间使用的开始。 */
+    @Test
+    fun lockScreenAlarmDismiss_withoutAnyKeyguard_wakeIsLaterLongUse() {
+        val events = session("2026-11-10T22:30", "2026-11-10T23:00", "com.tiktok") +
+            session("2026-11-11T07:30:00", "2026-11-11T07:30:15", "com.android.deskclock") +
+            session("2026-11-11T09:30", "2026-11-11T09:50", "com.android.settings")
+        val result = computeNight(events)
+
+        val sleep = result.sleeps.single()
+        assertEquals("2026-11-10", sleep.dayDate)
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T09:30"), sleep.sleepEndTs)
+        assertEquals("com.tiktok", sleep.lastAppPackage)
+        assertTrue(result.sleeps.none { it.sleepEndTs == ts("2026-11-11T07:30:00") })
+    }
+
+    /** 7:30 解锁后只玩了两分钟又睡，9:30 才真正起来：一次睡眠，结束在后一次解锁。 */
+    @Test
+    fun briefUnlock_thenMoreSleep_wakeIsLaterUnlock() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:01", "com.android.deskclock"),
+            paused("2026-11-11T07:32:00", "com.android.deskclock"),
+            shown("2026-11-11T07:32:00"),
+            hidden("2026-11-11T09:30:00"),
+            resumed("2026-11-11T09:30:01", "com.android.settings"),
+            paused("2026-11-11T09:50:00", "com.android.settings"),
+            shown("2026-11-11T09:50:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T09:30:00"), sleep.sleepEndTs)
+        assertEquals("com.tiktok", sleep.lastAppPackage)
+    }
+
+    /** 夜里两次不超过 3 分钟的解锁都并掉，醒来是后面那次真正解锁。 */
+    @Test
+    fun twoBriefUnlocks_areMerged_wakeIsFinalUnlock() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            hidden("2026-11-11T03:00:00"),
+            resumed("2026-11-11T03:00:01", "com.android.deskclock"),
+            paused("2026-11-11T03:01:00", "com.android.deskclock"),
+            shown("2026-11-11T03:01:00"),
+            hidden("2026-11-11T05:10:00"),
+            resumed("2026-11-11T05:10:01", "com.android.settings"),
+            paused("2026-11-11T05:11:00", "com.android.settings"),
+            shown("2026-11-11T05:11:00"),
+            hidden("2026-11-11T07:40:00"),
+            resumed("2026-11-11T07:40:01", "com.android.settings"),
+            paused("2026-11-11T08:00:00", "com.android.settings"),
+            shown("2026-11-11T08:00:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:40:00"), sleep.sleepEndTs)
+    }
+
+    /** 解锁后连续使用明显超过 3 分钟：醒来就是这次解锁，而不是几秒后的 RESUMED。 */
+    @Test
+    fun unlockThenUseWellOverThreeMinutes_wakeIsThatUnlock() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:03", "com.android.settings"),
+            paused("2026-11-11T07:50:00", "com.android.settings"),
+            shown("2026-11-11T07:50:00"),
+            hidden("2026-11-11T10:00:00"),
+            resumed("2026-11-11T10:00:01", "com.android.settings"),
+            paused("2026-11-11T10:20:00", "com.android.settings"),
+            shown("2026-11-11T10:20:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertEquals(510L, sleep.sleepDurationMin)
+        assertTrue(sleep.sleepEndTs < ts("2026-11-11T07:30:03"))
+    }
+
+    /** 解锁时长刚好 3 分钟，之后又是长静默：仍是短暂中断。 */
+    @Test
+    fun unlockOfExactlyThreeMinutes_isBriefInterruption() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:00", "com.android.settings"),
+            paused("2026-11-11T07:33:00", "com.android.settings"),
+            shown("2026-11-11T07:33:00"),
+            hidden("2026-11-11T09:30:00"),
+            resumed("2026-11-11T09:30:01", "com.android.settings"),
+            paused("2026-11-11T09:50:00", "com.android.settings"),
+            shown("2026-11-11T09:50:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-11T09:30:00"), sleep.sleepEndTs)
+    }
+
+    /** 比 3 分钟多 1 秒的使用就是醒来，时间取解锁而不是 RESUMED。 */
+    @Test
+    fun unlockThreeMinutesPlusOneSecond_isWake() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:02", "com.android.settings"),
+            paused("2026-11-11T07:33:03", "com.android.settings"),
+            shown("2026-11-11T07:33:03"),
+            hidden("2026-11-11T09:30:00"),
+            resumed("2026-11-11T09:30:01", "com.android.settings"),
+            paused("2026-11-11T09:50:00", "com.android.settings"),
+            shown("2026-11-11T09:50:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertTrue(sleep.sleepEndTs < ts("2026-11-11T07:30:02"))
+    }
+
+    /** 没有 KEYGUARD 时，刚好 3 分钟的夜间会话并掉；多 1 秒则从这次会话开始醒来。 */
+    @Test
+    fun noKeyguard_threeMinuteBoundary_mergesExactAndWakesJustOver() {
+        val exact = session("2026-11-10T22:30", "2026-11-10T23:00", "com.tiktok") +
+            session("2026-11-11T07:30:00", "2026-11-11T07:33:00", "com.android.settings") +
+            session("2026-11-11T09:30", "2026-11-11T09:50", "com.android.settings")
+        val exactSleep = computeNight(exact).sleeps.single()
+        assertEquals(ts("2026-11-11T09:30"), exactSleep.sleepEndTs)
+
+        val justOver = session("2026-11-10T22:30", "2026-11-10T23:00", "com.tiktok") +
+            session("2026-11-11T07:30:00", "2026-11-11T07:33:01", "com.android.settings") +
+            session("2026-11-11T09:30", "2026-11-11T09:50", "com.android.settings")
+        val overSleep = computeNight(justOver).sleeps.single()
+        assertEquals(ts("2026-11-11T07:30:00"), overSleep.sleepEndTs)
+    }
+
+    /** 采集结束时还停在解锁状态：没有 KEYGUARD_SHOWN 也没有前台会话，这次解锁就是醒来。 */
+    @Test
+    fun stillUnlockedAtRangeEnd_withoutSession_isWake() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(hidden("2026-11-11T07:30:00"))
+        val result = SleepCalculator.compute(
+            events,
+            ts("2026-11-10T00:00"),
+            ts("2026-11-11T10:00"),
+        )
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertEquals(510L, sleep.sleepDurationMin)
+    }
+
+    /** 已经 PAUSED，但没有 KEYGUARD_SHOWN，到采集结束仍算解锁：醒来是 KEYGUARD_HIDDEN。 */
+    @Test
+    fun closedUseWithoutKeyguardShown_stillUnlockedAtRangeEnd_isWake() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:02", "com.android.settings"),
+            paused("2026-11-11T07:31:00", "com.android.settings"),
+        )
+        val result = SleepCalculator.compute(
+            events,
+            ts("2026-11-10T00:00"),
+            ts("2026-11-11T10:00"),
+        )
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertTrue(sleep.sleepEndTs < ts("2026-11-11T07:30:02"))
+    }
+
+    /**
+     * 其它时刻有解锁事件，但起床这次只有一段超过 3 分钟的前台、没有 KEYGUARD_HIDDEN：
+     * 用这段会话的开始时间作为醒来。
+     */
+    @Test
+    fun longSessionWithoutKeyguardInStretch_sessionStartIsWake() {
+        val events = eveningUntil("2026-11-10T23:00") +
+            session("2026-11-11T07:20", "2026-11-11T07:45", "com.android.settings")
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:20"), sleep.sleepEndTs)
+        assertEquals("com.tiktok", sleep.lastAppPackage)
+    }
+
+    /** 只有锁屏短活动、没有后续解锁或长时间使用：不编造醒来时间。 */
+    @Test
+    fun lockScreenOnlyAfterSleep_doesNotInventWake() {
+        val events = eveningUntil("2026-11-10T23:00") + listOf(
+            resumed("2026-11-11T07:30:00", "com.android.deskclock"),
+            paused("2026-11-11T07:30:20", "com.android.deskclock"),
+        )
+        val result = computeNight(events)
+        assertTrue(result.sleeps.isEmpty())
+        assertTrue(result.sessions.any { it.pkg == "com.android.deskclock" })
+    }
+
+    /** 没有解锁事件时，夜里唯一的短会话仍然是醒来（旧行为：它是下一次真实使用）。 */
+    @Test
+    fun noKeyguard_terminalBriefSession_isStillWake() {
+        val events = session("2026-11-10T22:30", "2026-11-10T23:00", "com.tiktok") +
+            session("2026-11-11T07:30:00", "2026-11-11T07:31:00", "com.android.settings")
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+    }
+
+    /** 相隔几十秒的两小段前台并成一次中断，不在第一段醒来。 */
+    @Test
+    fun noKeyguard_twoCloseBriefSessions_mergeAsOneInterruption() {
+        val events = session("2026-11-10T22:30", "2026-11-10T23:00", "com.tiktok") + listOf(
+            resumed("2026-11-11T03:00:00", "com.a"),
+            paused("2026-11-11T03:00:30", "com.a"),
+            resumed("2026-11-11T03:00:50", "com.b"),
+            paused("2026-11-11T03:01:20", "com.b"),
+        ) + session("2026-11-11T07:30", "2026-11-11T07:50", "com.android.settings")
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:30"), sleep.sleepEndTs)
+    }
+
+    /** 入睡前两分钟再看一眼手机：间隙不到 90 分钟，不能把更早的使用当成入睡。 */
+    @Test
+    fun shortUseJustBeforeSleep_staysSleepStart() {
+        val events = listOf(
+            hidden("2026-11-10T21:00:00"),
+            resumed("2026-11-10T21:00:01", "com.app.a"),
+            paused("2026-11-10T22:40:00", "com.app.a"),
+            shown("2026-11-10T22:40:00"),
+            hidden("2026-11-10T22:50:00"),
+            resumed("2026-11-10T22:50:01", "com.app.b"),
+            paused("2026-11-10T22:52:00", "com.app.b"),
+            shown("2026-11-10T22:52:00"),
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:01", "com.android.settings"),
+            paused("2026-11-11T07:50:00", "com.android.settings"),
+            shown("2026-11-11T07:50:00"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T22:52:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertEquals("com.app.b", sleep.lastAppPackage)
+    }
+
+    /** 整晚只有 KEYGUARD_HIDDEN、没有 KEYGUARD_SHOWN 时，仍用两次解锁之间的前台结束作为入睡。 */
+    @Test
+    fun hiddenWithoutShown_stillSplitsNightAtRealUse() {
+        val events = listOf(
+            hidden("2026-11-10T22:30:00"),
+            resumed("2026-11-10T22:30:01", "com.tiktok"),
+            paused("2026-11-10T23:00:00", "com.tiktok"),
+            hidden("2026-11-11T07:30:00"),
+            resumed("2026-11-11T07:30:02", "com.android.settings"),
+            paused("2026-11-11T07:50:00", "com.android.settings"),
+        )
+        val result = computeNight(events)
+        val sleep = result.sleeps.single()
+        assertEquals(ts("2026-11-10T23:00:00"), sleep.sleepStartTs)
+        assertEquals(ts("2026-11-11T07:30:00"), sleep.sleepEndTs)
+        assertEquals("com.tiktok", sleep.lastAppPackage)
+    }
+
+    private fun hidden(dateTime: String) = UsageEventInput(
+        timestampMs = ts(dateTime),
+        type = SleepConstants.EVENT_KEYGUARD_HIDDEN,
+        packageName = "",
+    )
+
+    private fun shown(dateTime: String) = UsageEventInput(
+        timestampMs = ts(dateTime),
+        type = SleepConstants.EVENT_KEYGUARD_SHOWN,
+        packageName = "",
+    )
+
+    private fun eveningUntil(end: String) = listOf(
+        hidden("2026-11-10T22:30:00"),
+        resumed("2026-11-10T22:30:01", "com.tiktok"),
+        paused(end, "com.tiktok"),
+        shown(end),
+    )
+
+    private fun computeNight(events: List<UsageEventInput>) = SleepCalculator.compute(
+        events,
+        ts("2026-11-10T00:00"),
+        ts("2026-11-11T12:00"),
+    )
 }

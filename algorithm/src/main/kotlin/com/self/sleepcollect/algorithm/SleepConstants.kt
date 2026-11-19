@@ -24,9 +24,21 @@ object SleepConstants {
      */
     val ZONE_ID: ZoneId = ZoneId.of("Asia/Shanghai")
 
+    /**
+     * 短暂中断上限：3 分钟。
+     * 解锁或前台使用不超过此时长，并且之后又进入一段长静默时，不把它当成醒来。
+     */
+    const val MAX_BRIEF_INTERRUPTION_MS: Long = 3L * 60L * 1000L
+
     /** 与 UsageEvents.Event.ACTIVITY_RESUMED / MOVE_TO_FOREGROUND 相同，值为 1。 */
     const val EVENT_ACTIVITY_RESUMED: Int = 1
 
     /** 与 UsageEvents.Event.ACTIVITY_PAUSED / MOVE_TO_BACKGROUND 相同，值为 2。 */
     const val EVENT_ACTIVITY_PAUSED: Int = 2
+
+    /** 与 UsageEvents.Event.KEYGUARD_SHOWN 相同，API 28+，值为 17。 */
+    const val EVENT_KEYGUARD_SHOWN: Int = 17
+
+    /** 与 UsageEvents.Event.KEYGUARD_HIDDEN 相同，API 28+，值为 18。设备解锁。 */
+    const val EVENT_KEYGUARD_HIDDEN: Int = 18
 }
