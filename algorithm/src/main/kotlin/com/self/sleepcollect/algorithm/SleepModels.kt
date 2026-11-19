@@ -1,8 +1,9 @@
 package com.self.sleepcollect.algorithm
 
 /**
- * 纯 JVM 输入：一条前台生命周期事件。
- * [type] 仅使用 1=RESUMED / 2=PAUSED；其它类型应在采集层过滤掉。
+ * 纯 JVM 输入：一条 UsageEvents 记录。
+ * [type] 与 Android 框架的整型一致：1=RESUMED，2=PAUSED，17=KEYGUARD_SHOWN，18=KEYGUARD_HIDDEN。
+ * 锁屏事件的 [packageName] 允许为空。
  */
 data class UsageEventInput(
     val timestampMs: Long,
